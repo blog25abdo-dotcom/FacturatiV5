@@ -189,6 +189,10 @@ export function OrderProvider({ children }: { children: ReactNode }) {
 
       // Ajouter à l'historique
       await addOrderToHistory(id, order.productId, status, order.quantity, previousStatus, status, notes);
+
+      // Note: Le stock est maintenant calculé dynamiquement
+      // Stock restant = Stock initial - Somme des quantités livrées
+      // Pas besoin de mettre à jour physiquement le stock du produit
     } catch (error) {
       console.error('Erreur lors de la mise à jour du statut:', error);
     }

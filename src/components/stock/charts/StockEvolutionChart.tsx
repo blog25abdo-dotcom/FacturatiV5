@@ -4,7 +4,7 @@ import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
 interface StockEvolutionData {
   month: string;
   initialStock: number;
-  sold: number;
+  delivered: number;
   remaining: number;
 }
 
@@ -59,7 +59,7 @@ export default function StockEvolutionChart({ data, productName, unit }: StockEv
               <span className="font-medium text-gray-700 dark:text-gray-300">{item.month}</span>
               <div className="flex items-center space-x-4 text-xs">
                 <span className="text-blue-600">Initial: {item.initialStock.toFixed(1)}</span>
-                <span className="text-red-600">Vendu: {item.sold.toFixed(1)}</span>
+                <span className="text-green-600">Livré: {item.delivered.toFixed(1)}</span>
                 <span className="text-green-600">Restant: {item.remaining.toFixed(1)}</span>
               </div>
             </div>
@@ -74,11 +74,11 @@ export default function StockEvolutionChart({ data, productName, unit }: StockEv
                 }}
               />
               
-              {/* Quantité vendue (rouge) */}
+              {/* Quantité livrée (vert) */}
               <div 
-                className="absolute bottom-0 left-[35%] bg-gradient-to-t from-red-400 to-red-500 rounded-lg transition-all duration-700 ease-out"
+                className="absolute bottom-0 left-[35%] bg-gradient-to-t from-green-400 to-green-500 rounded-lg transition-all duration-700 ease-out"
                 style={{ 
-                  height: `${getBarHeight(item.sold)}%`,
+                  height: `${getBarHeight(item.delivered)}%`,
                   width: '30%',
                   animationDelay: '0.2s'
                 }}
@@ -86,7 +86,7 @@ export default function StockEvolutionChart({ data, productName, unit }: StockEv
               
               {/* Stock restant (vert) */}
               <div 
-                className="absolute bottom-0 right-0 bg-gradient-to-t from-green-400 to-green-500 rounded-lg transition-all duration-700 ease-out"
+                className="absolute bottom-0 right-0 bg-gradient-to-t from-gray-400 to-gray-500 rounded-lg transition-all duration-700 ease-out"
                 style={{ 
                   height: `${getBarHeight(item.remaining)}%`,
                   width: '30%',
@@ -105,11 +105,11 @@ export default function StockEvolutionChart({ data, productName, unit }: StockEv
           <span className="text-xs text-gray-600 dark:text-gray-300">Stock Initial</span>
         </div>
         <div className="flex items-center space-x-2">
-          <div className="w-3 h-3 bg-gradient-to-r from-red-400 to-red-500 rounded"></div>
-          <span className="text-xs text-gray-600 dark:text-gray-300">Quantité Vendue</span>
+          <div className="w-3 h-3 bg-gradient-to-r from-green-400 to-green-500 rounded"></div>
+          <span className="text-xs text-gray-600 dark:text-gray-300">Quantité Livrée</span>
         </div>
         <div className="flex items-center space-x-2">
-          <div className="w-3 h-3 bg-gradient-to-r from-green-400 to-green-500 rounded"></div>
+          <div className="w-3 h-3 bg-gradient-to-r from-gray-400 to-gray-500 rounded"></div>
           <span className="text-xs text-gray-600 dark:text-gray-300">Stock Restant</span>
         </div>
       </div>

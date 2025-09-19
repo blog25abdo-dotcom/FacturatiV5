@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useData } from '../../contexts/DataContext';
+import { useOrder } from '../../contexts/OrderContext';
 import { 
   TrendingUp, 
   Package, 
@@ -17,8 +18,17 @@ import {
   Filter,
   Calendar,
   PieChart,
-  Activity
+  Activity,
+  Truck,
+  Clock,
+  Plus,
+  Edit,
+  History,
+  X
 } from 'lucide-react';
+import AddOrderModal from '../orders/AddOrderModal';
+import OrderStatusModal from '../orders/OrderStatusModal';
+import ProductOrderHistory from '../orders/ProductOrderHistory';
 import StockEvolutionChart from './charts/StockEvolutionChart';
 import DonutChart from './charts/DonutChart';
 import MarginChart from './charts/MarginChart';
@@ -28,12 +38,17 @@ import html2pdf from 'html2pdf.js';
 
 export default function StockManagement() {
   const { user } = useAuth();
-  const { products, invoices } = useData();
+  const { products } = useData();
+  const { orders, getProductOrderStats, getProductStockInfo, updateOrderStatus } = useOrder();
   const [selectedProduct, setSelectedProduct] = useState('all');
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedYear, setSelectedYear] = useState(new Date().getFullYear());
   const [selectedPeriod, setSelectedPeriod] = useState('month');
   const [activeTab, setActiveTab] = useState('overview');
+  const [isAddOrderModalOpen, setIsAddOrderModalOpen] = useState(false);
+  const [selectedProductForOrder, setSelectedProductForOrder] = useState<string | null>(null);
+  const [orderStatusModal, setOrderStatusModal] = useState<string | null>(null);
+  const [viewingHistory, setViewingHistory] = useState<string | null>(null);
 
   // Vérifier l'accès PRO
   const isProActive = user?.company.subscription === 'pro' && user?.company.expiryDate && 
@@ -76,64 +91,42 @@ export default function StockManagement() {
       const date = new Date(currentDate.getFullYear(), currentDate.getMonth() - i, 1);
       const monthName = date.toLocaleDateString('fr-FR', { month: 'short' });
       
-      // Calculer les ventes pour ce mois
-      const monthSales = invoices
-        .filter(invoice => {
-          const invoiceDate = new Date(invoice.date);
-          return invoiceDate.getMonth() === date.getMonth() && 
-                 invoiceDate.getFullYear() === date.getFullYear();
+      // Calculer les commandes livrées pour ce mois
+      const monthDelivered = orders
+        .filter(order => {
+          const orderDate = new Date(order.orderDate);
+          return orderDate.getMonth() === date.getMonth() && 
+                 orderDate.getFullYear() === date.getFullYear() &&
+                 order.productId === productId &&
+                 order.status === 'delivered';
         })
-        .reduce((sum, invoice) => {
-          return sum + invoice.items
-            .filter(item => item.description === product.name)
-            .reduce((itemSum, item) => itemSum + item.quantity, 0);
-        }, 0);
+        .reduce((sum, order) => sum + order.quantity, 0);
 
       months.push({
         month: monthName,
         initialStock: product.stock,
-        sold: monthSales,
-        remaining: Math.max(0, product.stock - monthSales)
+        delivered: monthDelivered,
+        remaining: Math.max(0, product.stock - monthDelivered)
       });
     }
     
     return months;
   };
+
   // Données détaillées par produit
   const getDetailedProductData = () => {
     return products.map(product => {
-      let quantitySold = 0;
-      let salesValue = 0;
-      let ordersCount = 0;
-      const ordersSet = new Set();
-
-      invoices.forEach(invoice => {
-        let hasProduct = false;
-        invoice.items.forEach(item => {
-          if (item.description === product.name) {
-            quantitySold += item.quantity;
-            salesValue += item.total;
-            hasProduct = true;
-          }
-        });
-        if (hasProduct) {
-          ordersSet.add(invoice.id);
-        }
-      });
-
-      ordersCount = ordersSet.size;
-      const remainingStock = product.stock - quantitySold;
-      const purchaseValue = product.stock * product.purchasePrice;
-      const margin = salesValue - (quantitySold * product.purchasePrice);
+      const orderStats = getProductOrderStats(product.id);
+      const stockInfo = getProductStockInfo(product.id);
 
       return {
         ...product,
-        quantitySold,
-        salesValue,
-        ordersCount,
-        remainingStock,
-        purchaseValue,
-        margin
+        quantitySold: orderStats.deliveredQuantity,
+        salesValue: orderStats.totalValue,
+        ordersCount: orderStats.totalOrders,
+        remainingStock: stockInfo.remainingStock,
+        purchaseValue: product.stock * product.purchasePrice,
+        margin: orderStats.totalValue - (orderStats.deliveredQuantity * product.purchasePrice)
       };
     }).filter(product => {
       if (selectedProduct === 'all') return true;
@@ -141,22 +134,18 @@ export default function StockManagement() {
     });
   };
 
-    const detailedData = getDetailedProductData();
+  const detailedData = getDetailedProductData();
 
-  const generateDonutData = (type: 'sales' | 'stock') => {
+  const generateDonutData = (type: 'orders' | 'stock') => {
     const colors = [
       '#8B5CF6', '#06B6D4', '#10B981', '#F59E0B', '#EF4444',
       '#EC4899', '#6366F1', '#84CC16', '#F97316', '#14B8A6'
     ];
 
-    if (type === 'sales') {
+    if (type === 'orders') {
       const salesByProduct = products.map(product => {
-        const totalSales = invoices.reduce((sum, invoice) => {
-          return sum + invoice.items
-            .filter(item => item.description === product.name)
-            .reduce((itemSum, item) => itemSum + item.total, 0);
-        }, 0);
-        return { product: product.name, value: totalSales };
+        const orderStats = getProductOrderStats(product.id);
+        return { product: product.name, value: orderStats.totalValue };
       }).filter(item => item.value > 0);
 
       const totalSales = salesByProduct.reduce((sum, item) => sum + item.value, 0);
@@ -169,13 +158,11 @@ export default function StockManagement() {
       }));
     } else {
       const stockByProduct = products.map(product => {
-        const soldQuantity = invoices.reduce((sum, invoice) => {
-          return sum + invoice.items
-            .filter(item => item.description === product.name)
-            .reduce((itemSum, item) => itemSum + item.quantity, 0);
-        }, 0);
+        const deliveredQuantity = orders
+          .filter(order => order.productId === product.id && order.status === 'delivered')
+          .reduce((sum, order) => sum + order.quantity, 0);
         
-        const remainingStock = Math.max(0, product.stock - soldQuantity);
+        const remainingStock = Math.max(0, product.stock - deliveredQuantity);
         const stockValue = remainingStock * product.purchasePrice;
         
         return { product: product.name, value: stockValue };
@@ -194,23 +181,17 @@ export default function StockManagement() {
 
   const generateMarginData = () => {
     return products.map(product => {
-      const salesData = invoices.reduce((acc, invoice) => {
-        invoice.items.forEach(item => {
-          if (item.description === product.name) {
-            acc.quantity += item.quantity;
-            acc.value += item.total;
-          }
-        });
-        return acc;
-      }, { quantity: 0, value: 0 });
+      const orderStats = getProductOrderStats(product.id);
+      const deliveredQuantity = orderStats.deliveredQuantity;
+      const deliveredValue = orderStats.totalValue;
 
-      const purchaseValue = salesData.quantity * product.purchasePrice;
-      const margin = salesData.value - purchaseValue;
+      const purchaseValue = deliveredQuantity * product.purchasePrice;
+      const margin = deliveredValue - purchaseValue;
 
       return {
         productName: product.name,
         margin,
-        salesValue: salesData.value,
+        salesValue: deliveredValue,
         purchaseValue,
         unit: product.unit || 'unité'
       };
@@ -224,18 +205,17 @@ export default function StockManagement() {
       const date = new Date(selectedYear, i, 1);
       const monthName = date.toLocaleDateString('fr-FR', { month: 'short' });
       
-      const monthData = invoices
-        .filter(invoice => {
-          const invoiceDate = new Date(invoice.date);
-          return invoiceDate.getMonth() === i && invoiceDate.getFullYear() === selectedYear;
+      const monthData = orders
+        .filter(order => {
+          const orderDate = new Date(order.orderDate);
+          return orderDate.getMonth() === i && 
+                 orderDate.getFullYear() === selectedYear &&
+                 order.status === 'delivered' &&
+                 (selectedProduct === 'all' || order.productId === selectedProduct);
         })
-        .reduce((acc, invoice) => {
-          invoice.items.forEach(item => {
-            if (selectedProduct === 'all' || item.description === products.find(p => p.id === selectedProduct)?.name) {
-              acc.quantity += item.quantity;
-              acc.value += item.total;
-            }
-          });
+        .reduce((acc, order) => {
+          acc.quantity += order.quantity;
+          acc.value += order.totalPrice;
           acc.ordersCount += 1;
           return acc;
         }, { quantity: 0, value: 0, ordersCount: 0 });
@@ -267,36 +247,36 @@ export default function StockManagement() {
     productNames.forEach(productName => {
       months.forEach(month => {
         const monthIndex = months.indexOf(month);
-        const monthSales = invoices
-          .filter(invoice => {
-            const invoiceDate = new Date(invoice.date);
-            return invoiceDate.getMonth() === monthIndex && 
-                   invoiceDate.getFullYear() === selectedYear;
+        const monthOrders = orders
+          .filter(order => {
+            const orderDate = new Date(order.orderDate);
+            return orderDate.getMonth() === monthIndex && 
+                   orderDate.getFullYear() === selectedYear &&
+                   order.status === 'delivered';
           })
-          .reduce((sum, invoice) => {
-            return sum + invoice.items
-              .filter(item => item.description === productName)
-              .reduce((itemSum, item) => itemSum + item.quantity, 0);
+          .reduce((sum, order) => {
+            const product = products.find(p => p.name === productName);
+            return order.productId === product?.id ? sum + order.quantity : sum;
           }, 0);
 
-        const monthValue = invoices
-          .filter(invoice => {
-            const invoiceDate = new Date(invoice.date);
-            return invoiceDate.getMonth() === monthIndex && 
-                   invoiceDate.getFullYear() === selectedYear;
+        const monthValue = orders
+          .filter(order => {
+            const orderDate = new Date(order.orderDate);
+            return orderDate.getMonth() === monthIndex && 
+                   orderDate.getFullYear() === selectedYear &&
+                   order.status === 'delivered';
           })
-          .reduce((sum, invoice) => {
-            return sum + invoice.items
-              .filter(item => item.description === productName)
-              .reduce((itemSum, item) => itemSum + item.total, 0);
+          .reduce((sum, order) => {
+            const product = products.find(p => p.name === productName);
+            return order.productId === product?.id ? sum + order.totalPrice : sum;
           }, 0);
 
-        maxQuantity = Math.max(maxQuantity, monthSales);
+        maxQuantity = Math.max(maxQuantity, monthOrders);
         
         heatmapData.push({
           month,
           productName,
-          quantity: monthSales,
+          quantity: monthOrders,
           value: monthValue,
           intensity: 0 // sera calculé après
         });
@@ -320,61 +300,52 @@ export default function StockManagement() {
 
     let totalStockInitial = 0;
     let totalPurchaseValue = 0;
-    let totalSalesValue = 0;
-    let totalQuantitySold = 0;
     let totalRemainingStock = 0;
     let dormantProducts = 0;
 
-    filteredProducts.forEach(product => {
+    const orderStats = filteredProducts.reduce((acc, product) => {
       totalStockInitial += product.stock;
       totalPurchaseValue += product.stock * product.purchasePrice;
       
-      let productQuantitySold = 0;
-      let productSalesValue = 0;
+      const productOrderStats = getProductOrderStats(product.id);
+      const stockInfo = getProductStockInfo(product.id);
       
-      invoices.forEach(invoice => {
-        invoice.items.forEach(item => {
-          if (item.description === product.name) {
-            productQuantitySold += item.quantity;
-            productSalesValue += item.total;
-          }
-        });
-      });
+      acc.totalValue += productOrderStats.totalValue;
+      acc.deliveredQuantity += productOrderStats.deliveredQuantity;
+      totalRemainingStock += stockInfo.remainingStock;
       
-      totalQuantitySold += productQuantitySold;
-      totalSalesValue += productSalesValue;
-      const remainingStock = product.stock - productQuantitySold;
-      totalRemainingStock += remainingStock;
-      
-      if (productQuantitySold === 0) {
+      if (productOrderStats.deliveredQuantity === 0) {
         dormantProducts++;
       }
-    });
+      
+      return acc;
+    }, { totalValue: 0, deliveredQuantity: 0 });
 
-    const grossMargin = totalSalesValue - totalPurchaseValue;
+    const grossMargin = orderStats.totalValue - totalPurchaseValue;
     
     return {
       totalStockInitial,
       totalPurchaseValue,
-      totalSalesValue,
-      totalQuantitySold,
+      totalSalesValue: orderStats.totalValue,
+      totalQuantitySold: orderStats.deliveredQuantity,
       totalRemainingStock,
       dormantProducts,
-      grossMargin
+      grossMargin: orderStats.totalValue - totalPurchaseValue
     };
   };
 
   const stats = calculateStats(selectedProduct);
-  const salesDonutData = generateDonutData('sales');
+  const ordersDonutData = generateDonutData('orders');
   const stockDonutData = generateDonutData('stock');
   const marginData = generateMarginData();
   const monthlySalesData = generateMonthlySalesData();
   const heatmapData = generateHeatmapData();
-  const availableYears = [...new Set(invoices.map(inv => new Date(inv.date).getFullYear()))].sort((a, b) => b - a);
+  const availableYears = [...new Set(orders.map(order => new Date(order.orderDate).getFullYear()))].sort((a, b) => b - a);
   const months = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun', 'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc'];
 
   const tabs = [
     { id: 'overview', label: 'Vue d\'ensemble', icon: BarChart3 },
+    { id: 'orders', label: 'Commandes', icon: ShoppingCart },
     { id: 'evolution', label: 'Évolution', icon: TrendingUp },
     { id: 'margins', label: 'Marges', icon: DollarSign },
     { id: 'heatmap', label: 'Heatmap', icon: Activity }
@@ -450,6 +421,15 @@ export default function StockManagement() {
         </div>
       </div>
     `;
+  };
+
+  const handleAddOrder = (productId: string) => {
+    setSelectedProductForOrder(productId);
+    setIsAddOrderModalOpen(true);
+  };
+
+  const handleViewHistory = (productId: string) => {
+    setViewingHistory(productId);
   };
 
   return (
@@ -683,23 +663,13 @@ export default function StockManagement() {
         </div>
      </div>
 
-
-
-
-
-
-
-
-
-          
-
           {/* Graphiques de synthèse */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <DonutChart
-              data={salesDonutData}
-              title="Répartition des Ventes"
+              data={ordersDonutData}
+              title="Répartition des Commandes"
               subtitle="Par produit (valeur)"
-              centerValue={`${stats.totalSalesValue.toLocaleString()}`}
+              centerValue={`${ordersDonutData.reduce((sum, item) => sum + item.value, 0).toLocaleString()}`}
               centerLabel="MAD Total"
             />
             
@@ -710,6 +680,175 @@ export default function StockManagement() {
               centerValue={`${stockDonutData.reduce((sum, item) => sum + item.value, 0).toLocaleString()}`}
               centerLabel="MAD Stock"
             />
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'orders' && (
+        <div className="space-y-6">
+          {/* Header section commandes */}
+          <div className="flex justify-between items-center">
+            <h2 className="text-xl font-semibold text-gray-900 dark:text-gray-100">Gestion des Commandes</h2>
+            <button
+              onClick={() => setIsAddOrderModalOpen(true)}
+              className="inline-flex items-center space-x-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-700 hover:to-indigo-700 text-white px-4 py-2 rounded-lg transition-all duration-200"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Nouvelle Commande</span>
+            </button>
+          </div>
+
+          {/* Stats commandes */}
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+            <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+              <div className="flex items-center space-x-3">
+                <div className="w-12 h-12 bg-gradient-to-br from-blue-500 to-indigo-600 rounded-lg flex items-center justify-center">
+                  <ShoppingCart className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">{orders.length}</p>
+                  <p className="text-sm text-gray-600 dark:text-gray-300">Total Commandes</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+              <div className="flex items-center space-x-3">
+                <div className="w-12 h-12 bg-gradient-to-br from-green-500 to-emerald-600 rounded-lg flex items-center justify-center">
+                  <Truck className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">
+                    {orders.filter(o => o.status === 'delivered').length}
+                  </p>
+                  <p className="text-sm text-gray-600 dark:text-gray-300">Livrées</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+              <div className="flex items-center space-x-3">
+                <div className="w-12 h-12 bg-gradient-to-br from-yellow-500 to-orange-600 rounded-lg flex items-center justify-center">
+                  <Clock className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">
+                    {orders.filter(o => o.status === 'pending' || o.status === 'confirmed').length}
+                  </p>
+                  <p className="text-sm text-gray-600 dark:text-gray-300">En Cours</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+              <div className="flex items-center space-x-3">
+                <div className="w-12 h-12 bg-gradient-to-br from-red-500 to-pink-600 rounded-lg flex items-center justify-center">
+                  <XCircle className="w-6 h-6 text-white" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold text-gray-900 dark:text-gray-100">
+                    {orders.filter(o => o.status === 'cancelled').length}
+                  </p>
+                  <p className="text-sm text-gray-600 dark:text-gray-300">Annulées</p>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          {/* Liste des commandes */}
+          <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
+            <div className="px-6 py-4 border-b border-gray-200 dark:border-gray-700">
+              <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">Toutes les Commandes</h3>
+            </div>
+            
+            <div className="overflow-x-auto">
+              <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+                <thead className="bg-gray-50 dark:bg-gray-700">
+                  <tr>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                      N° Commande
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                      Produit
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                      Quantité
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                      Total
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                      Date
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                      Statut
+                    </th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
+                  {orders.map((order) => {
+                    const product = products.find(p => p.id === order.productId);
+                    
+                    return (
+                      <tr key={order.id} className="hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{order.number}</div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <div>
+                            <div className="text-sm font-medium text-gray-900 dark:text-gray-100">{order.productName}</div>
+                            <div className="text-xs text-gray-500 dark:text-gray-400">{product?.category}</div>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
+                          {order.quantity} {product?.unit}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-gray-100">
+                          {order.totalPrice.toLocaleString()} MAD
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900 dark:text-gray-100">
+                          {new Date(order.orderDate).toLocaleDateString('fr-FR')}
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap">
+                          <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                            order.status === 'delivered' ? 'bg-green-100 text-green-800' :
+                            order.status === 'confirmed' ? 'bg-blue-100 text-blue-800' :
+                            order.status === 'cancelled' ? 'bg-red-100 text-red-800' :
+                            'bg-yellow-100 text-yellow-800'
+                          }`}>
+                            {order.status === 'delivered' ? 'Livrée' :
+                             order.status === 'confirmed' ? 'Confirmée' :
+                             order.status === 'cancelled' ? 'Annulée' : 'En attente'}
+                          </span>
+                        </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
+                          <button
+                            onClick={() => setOrderStatusModal(order.id)}
+                            className="text-blue-600 hover:text-blue-700 transition-colors"
+                            title="Changer statut"
+                          >
+                            <Edit className="w-4 h-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            {orders.length === 0 && (
+              <div className="text-center py-12">
+                <ShoppingCart className="w-12 h-12 text-gray-300 mx-auto mb-4" />
+                <p className="text-gray-500 dark:text-gray-400">Aucune commande créée</p>
+                <p className="text-sm text-gray-400 dark:text-gray-500 mt-1">
+                  Créez votre première commande pour commencer
+                </p>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -735,10 +874,10 @@ export default function StockManagement() {
       {activeTab === 'distribution' && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <DonutChart
-            data={salesDonutData}
-            title="Répartition des Ventes"
+            data={ordersDonutData}
+            title="Répartition des Commandes"
             subtitle="Par produit (valeur en MAD)"
-            centerValue={`${stats.totalSalesValue.toLocaleString()}`}
+            centerValue={`${ordersDonutData.reduce((sum, item) => sum + item.value, 0).toLocaleString()}`}
             centerLabel="MAD Total"
           />
           
@@ -788,24 +927,28 @@ export default function StockManagement() {
                   Stock Initial
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                  Qté Vendue
+                  Qté Commandée
+                </th>
+                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
+                  Qté Livrée
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
                   Stock Restant
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                  Valeur d'Achat
+                  Valeur Commandes
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                  Valeur de Vente
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 dark:text-gray-300 uppercase tracking-wider">
-                  Marge Brute
+                  Actions
                 </th>
               </tr>
             </thead>
             <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
-              {detailedData.map((product) => (
+              {products.map((product) => {
+                const orderStats = getProductOrderStats(product.id);
+                const stockInfo = getProductStockInfo(product.id);
+                
+                return (
                 <tr key={product.id} className="hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div>
@@ -815,64 +958,69 @@ export default function StockManagement() {
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                      {product.stock.toFixed(3)} {product.unit}
+                      {product.stock.toFixed(3)} {product.unit || 'unité'}
                     </div>
                     <div className="text-xs text-gray-500 dark:text-gray-400">
-                      Min: {product.minStock.toFixed(3)} {product.unit}
+                      Min: {product.minStock.toFixed(3)} {product.unit || 'unité'}
                     </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="text-sm font-medium text-gray-900 dark:text-gray-100">
-                      {product.quantitySold.toFixed(3)} {product.unit}
+                      {orderStats.totalQuantity.toFixed(3)} {product.unit}
                     </div>
                     <div className="text-xs text-gray-500 dark:text-gray-400">
-                      {product.ordersCount} commande{product.ordersCount > 1 ? 's' : ''}
+                      {orderStats.totalOrders} commande{orderStats.totalOrders > 1 ? 's' : ''}
+                    </div>
+                  </td>
+                  <td className="px-6 py-4 whitespace-nowrap">
+                    <div className="text-sm font-medium text-green-600">
+                      {orderStats.deliveredQuantity.toFixed(3)} {product.unit}
+                    </div>
+                    <div className="text-xs text-gray-500 dark:text-gray-400">
+                      En attente: {orderStats.pendingQuantity.toFixed(3)} {product.unit}
                     </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="flex items-center space-x-2">
                       <span className={`text-sm font-medium ${
-                        product.remainingStock <= product.minStock ? 'text-red-600' : 'text-gray-900 dark:text-gray-100'
+                        stockInfo.remainingStock <= product.minStock ? 'text-red-600' : 'text-gray-900 dark:text-white'
                       }`}>
-                        {product.remainingStock.toFixed(3)} {product.unit}
+                        {stockInfo.remainingStock.toFixed(3)} {product.unit}
                       </span>
-                      {product.remainingStock <= product.minStock && (
+                      {stockInfo.remainingStock <= product.minStock && (
                         <AlertTriangle className="w-4 h-4 text-red-500" />
                       )}
                     </div>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-gray-100">
-                    {product.purchaseValue.toLocaleString()} MAD
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">
+                    {orderStats.totalValue.toLocaleString()} MAD
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-gray-100">
-                    {product.salesValue.toLocaleString()} MAD
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="flex items-center space-x-2">
-                      <span className={`text-sm font-bold ${
-                        product.margin >= 0 ? 'text-green-600' : 'text-red-600'
-                      }`}>
-                        {product.margin >= 0 ? '+' : ''}{product.margin.toLocaleString()} MAD
-                      </span>
-                      {product.margin >= 0 ? (
-                        <CheckCircle className="w-4 h-4 text-green-500" />
-                      ) : (
-                        <XCircle className="w-4 h-4 text-red-500" />
-                      )}
+                  <td className="px-6 py-4 whitespace-nowrap text-sm font-medium text-gray-900 dark:text-white">
+                    <div className="flex items-center space-x-3">
+                      <button
+                        onClick={() => handleAddOrder(product.id)}
+                        className="text-blue-600 hover:text-blue-700 transition-colors"
+                        title="Nouvelle commande"
+                      >
+                        <ShoppingCart className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => handleViewHistory(product.id)}
+                        className="text-purple-600 hover:text-purple-700 transition-colors"
+                        title="Historique"
+                      >
+                        <History className="w-4 h-4" />
+                      </button>
                     </div>
-                    {product.margin < 0 && (
-                      <div className="text-xs text-red-600 dark:text-red-400 mt-1">
-                        Besoin: +{Math.abs(product.margin).toLocaleString()} MAD
-                      </div>
-                    )}
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
         </div>
 
-        {detailedData.length === 0 && (
+        {products.length === 0 && (
           <div className="text-center py-12">
             <p className="text-gray-500 dark:text-gray-400">Aucun produit trouvé</p>
           </div>
@@ -903,6 +1051,52 @@ export default function StockManagement() {
             Utilisez les graphiques pour optimiser davantage vos ventes.
           </p>
         </div>
+      )}
+
+      {/* Modals */}
+      <AddOrderModal 
+        isOpen={isAddOrderModalOpen} 
+        onClose={() => {
+          setIsAddOrderModalOpen(false);
+          setSelectedProductForOrder(null);
+        }}
+        preselectedProductId={selectedProductForOrder || undefined}
+      />
+
+      {/* Modal historique */}
+      {viewingHistory && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-gray-500 bg-opacity-75">
+          <div className="flex items-center justify-center min-h-screen px-4 pt-4 pb-20">
+            <div className="inline-block w-full max-w-4xl my-8 overflow-hidden text-left align-middle transition-all transform bg-white dark:bg-gray-800 shadow-xl rounded-2xl">
+              <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                  Historique des Commandes
+                </h3>
+                <button
+                  onClick={() => setViewingHistory(null)}
+                  className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-6">
+                <ProductOrderHistory 
+                  productId={viewingHistory}
+                  productName={products.find(p => p.id === viewingHistory)?.name || 'Produit'}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal statut commande */}
+      {orderStatusModal && (
+        <OrderStatusModal
+          isOpen={!!orderStatusModal}
+          onClose={() => setOrderStatusModal(null)}
+          order={orders.find(o => o.id === orderStatusModal)!}
+        />
       )}
     </div>
   );

@@ -582,11 +582,9 @@ export function DataProvider({ children }: { children: ReactNode }) {
   };
 
   const updateProductStock = async (productName: string, quantity: number) => {
-    const product = products.find(p => p.name === productName);
-    if (product) {
-      const newStock = Math.max(0, product.stock - quantity);
-      await updateProduct(product.id, { stock: newStock });
-    }
+    // Cette fonction n'est plus utilisée car le stock est géré par les commandes
+    // Le stock est maintenant calculé dynamiquement : stock initial - quantité livrée
+    console.warn('updateProductStock is deprecated. Stock is now managed through orders.');
   };
 
   // Factures
