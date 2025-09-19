@@ -210,7 +210,7 @@ export default function Sidebar({ open, setOpen, onUpgrade }: SidebarProps) {
             {open && (
               <div>
                 <h1 className="text-lg font-bold text-gray-900 dark:text-white">Facturati</h1>
-                <p className="text-xs text-gray-500 dark:text-gray-400">ERP Morocco (V.1.25.5)</p>
+                <p className="text-xs text-gray-500 dark:text-gray-400">ERP Morocco (V.1.25.6)</p>
               </div>
             )}
           </div>
