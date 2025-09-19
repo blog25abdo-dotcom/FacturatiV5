@@ -148,19 +148,27 @@ export default function EditOrder() {
     setIsLoading(true);
     
     try {
-      const updateData = {
+      const updateData: any = {
         clientType,
-        clientId: clientType === 'societe' ? selectedClientId : undefined,
-        client: clientType === 'societe' ? selectedClient : undefined,
-        clientName: clientType === 'personne_physique' ? clientName : undefined,
         orderDate,
-        deliveryDate: hasDeliveryDate ? deliveryDate : undefined,
         items,
         subtotal,
         totalVat,
         totalTTC,
         applyVat: clientType === 'personne_physique' ? applyVat : true
       };
+      
+      // Only add fields that have defined values
+      if (clientType === 'societe') {
+        updateData.clientId = selectedClientId;
+        updateData.client = selectedClient;
+      } else {
+        updateData.clientName = clientName;
+      }
+      
+      if (hasDeliveryDate && deliveryDate) {
+        updateData.deliveryDate = deliveryDate;
+      }
       
       await updateOrder(order.id, updateData);
       navigate(`/commandes/${order.id}`);

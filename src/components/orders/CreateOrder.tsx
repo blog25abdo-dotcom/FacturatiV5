@@ -157,13 +157,9 @@ export default function CreateOrder() {
     setIsLoading(true);
     
     try {
-      const orderData = {
+      const orderData: any = {
         clientType,
-        clientId: clientType === 'societe' ? selectedClientId : undefined,
-        client: clientType === 'societe' ? selectedClient : undefined,
-        clientName: clientType === 'personne_physique' ? clientName : undefined,
         orderDate,
-        deliveryDate: hasDeliveryDate ? deliveryDate : undefined,
         items,
         subtotal,
         totalVat,
@@ -171,6 +167,18 @@ export default function CreateOrder() {
         applyVat: clientType === 'personne_physique' ? applyVat : true,
         stockDebited: false // Sera géré automatiquement
       };
+      
+      // Only add fields that have defined values
+      if (clientType === 'societe') {
+        orderData.clientId = selectedClientId;
+        orderData.client = selectedClient;
+      } else {
+        orderData.clientName = clientName;
+      }
+      
+      if (hasDeliveryDate && deliveryDate) {
+        orderData.deliveryDate = deliveryDate;
+      }
       
       await addOrder(orderData);
       navigate('/commandes');
