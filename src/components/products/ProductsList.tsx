@@ -1,55 +1,50 @@
 import React, { useState } from 'react';
 import { useData } from '../../contexts/DataContext';
+import { useOrder } from '../../contexts/OrderContext';
 import { useLanguage } from '../../contexts/LanguageContext';
 import AddProductModal from './AddProductModal';
 import EditProductModal from './EditProductModal';
-import { Plus, Search, Edit, Trash2, AlertTriangle, Package } from 'lucide-react';
+import ProductOrderHistory from '../orders/ProductOrderHistory';
+import AddOrderModal from '../orders/AddOrderModal';
+import OrderStatusModal from '../orders/OrderStatusModal';
+import { Plus, Search, Edit, Trash2, AlertTriangle, Package, ShoppingCart, History, TrendingUp, Eye } from 'lucide-react';
 
 export default function ProductsList() {
   const { t } = useLanguage();
-  const { products, deleteProduct, invoices } = useData();
+  const { products, deleteProduct } = useData();
+  const { orders, getProductOrderStats, updateOrderStatus } = useOrder();
   const [searchTerm, setSearchTerm] = useState('');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingProduct, setEditingProduct] = useState<string | null>(null);
+  const [viewingHistory, setViewingHistory] = useState<string | null>(null);
+  const [isAddOrderModalOpen, setIsAddOrderModalOpen] = useState(false);
+  const [selectedProductForOrder, setSelectedProductForOrder] = useState<string | null>(null);
+  const [orderStatusModal, setOrderStatusModal] = useState<string | null>(null);
 
-  const getProductStats = (productId: string) => {
+  // Calculer le stock restant basé sur les commandes livrées
+  const getProductStockInfo = (productId: string) => {
     const product = products.find(p => p.id === productId);
-    if (!product) return { remainingStock: 0, ordersCount: 0, totalOrdered: 0 };
+    if (!product) return { remainingStock: 0, deliveredQuantity: 0 };
 
-    // Calculate total ordered quantity from all invoices
-    let totalOrdered = 0;
-    let ordersCount = 0;
-    const ordersSet = new Set();
-
-    invoices.forEach(invoice => {
-      let hasProduct = false;
-      invoice.items.forEach(item => {
-        if (item.description === product.name) {
-          totalOrdered += item.quantity;
-          hasProduct = true;
-        }
-      });
-      if (hasProduct) {
-        ordersSet.add(invoice.id);
-      }
-    });
-
-    ordersCount = ordersSet.size;
-    const remainingStock = product.stock - totalOrdered;
-
-    return { remainingStock, ordersCount, totalOrdered };
+    const deliveredQuantity = orders
+      .filter(order => order.productId === productId && order.status === 'delivered')
+      .reduce((sum, order) => sum + order.quantity, 0);
+    
+    const remainingStock = Math.max(0, product.stock - deliveredQuantity);
+    
+    return { remainingStock, deliveredQuantity };
   };
 
   const getStatusBadge = (product: typeof products[0]) => {
-    const stats = getProductStats(product.id);
-    if (stats.remainingStock <= 0) {
+    const stockInfo = getProductStockInfo(product.id);
+    if (stockInfo.remainingStock <= 0) {
       return (
         <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
           Rupture
         </span>
       );
     }
-    if (stats.remainingStock <= product.minStock) {
+    if (stockInfo.remainingStock <= product.minStock) {
       return (
         <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-800">
           Stock Faible
@@ -78,8 +73,23 @@ export default function ProductsList() {
   const handleEditProduct = (id: string) => {
     setEditingProduct(id);
   };
+
+  const handleAddOrder = (productId: string) => {
+    setSelectedProductForOrder(productId);
+    setIsAddOrderModalOpen(true);
+  };
+
+  const handleViewHistory = (productId: string) => {
+    setViewingHistory(productId);
+  };
+
+  const handleOrderStatusClick = (orderId: string) => {
+    setOrderStatusModal(orderId);
+  };
+
   return (
-    <div className="space-y-6">
+    <>
+      <div className="space-y-6">
       <div className="flex justify-between items-center">
         <h1 className="text-2xl font-bold text-gray-900 dark:text-white">{t('products')}</h1>
         <button 
@@ -124,14 +134,14 @@ export default function ProductsList() {
         
         <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
           <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 bg-gradient-to-br from-red-500 to-orange-500 rounded-lg flex items-center justify-center">
-              <AlertTriangle className="w-5 h-5 text-white" />
+            <div className="w-10 h-10 bg-gradient-to-br from-blue-500 to-indigo-500 rounded-lg flex items-center justify-center">
+              <ShoppingCart className="w-5 h-5 text-white" />
             </div>
             <div>
               <p className="text-2xl font-bold text-gray-900 dark:text-white">
-                {products.filter(p => p.stock <= p.minStock).length}
+                {orders.filter(o => o.status !== 'cancelled').length}
               </p>
-              <p className="text-sm text-gray-600 dark:text-gray-400">Stock Faible</p>
+              <p className="text-sm text-gray-600 dark:text-gray-400">Commandes Actives</p>
             </div>
           </div>
         </div>
@@ -172,7 +182,9 @@ export default function ProductsList() {
             </thead>
             <tbody className="bg-white dark:bg-gray-800 divide-y divide-gray-200 dark:divide-gray-700">
               {filteredProducts.map((product) => {
-                const stats = getProductStats(product.id);
+                const orderStats = getProductOrderStats(product.id);
+                const stockInfo = getProductStockInfo(product.id);
+                const productOrders = orders.filter(o => o.productId === product.id && o.status !== 'cancelled');
                 
                 return (
                 <tr key={product.id} className="hover:bg-gray-50 dark:hover:bg-gray-700 transition-colors">
@@ -196,33 +208,55 @@ export default function ProductsList() {
                     </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
-                    <div className="text-sm font-medium text-gray-900 dark:text-white">
-                      {stats.ordersCount} commande{stats.ordersCount > 1 ? 's' : ''}
-                    </div>
-                    <div className="text-xs text-gray-500 dark:text-gray-400">
-                      {stats.totalOrdered.toFixed(3)} {product.unit || 'unité'} commandé{stats.totalOrdered > 1 ? 's' : ''}
+                    <div className="space-y-1">
+                      <div className="text-sm font-medium text-gray-900 dark:text-white">
+                        {orderStats.totalOrders} commande{orderStats.totalOrders > 1 ? 's' : ''}
+                      </div>
+                      <div className="text-xs text-gray-500 dark:text-gray-400">
+                        {orderStats.totalQuantity.toFixed(3)} {product.unit || 'unité'}
+                      </div>
+                      <div className="text-xs text-blue-600 dark:text-blue-400 font-medium">
+                        {orderStats.totalValue.toLocaleString()} MAD
+                      </div>
                     </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     <div className="flex items-center space-x-2">
                       <span className={`text-sm font-medium ${
-                        stats.remainingStock <= product.minStock ? 'text-red-600' : 'text-gray-900 dark:text-white'
+                        stockInfo.remainingStock <= product.minStock ? 'text-red-600' : 'text-gray-900 dark:text-white'
                       }`}>
-                        {stats.remainingStock.toFixed(3)} {product.unit || 'unité'}
+                        {stockInfo.remainingStock.toFixed(3)} {product.unit || 'unité'}
                       </span>
-                      {stats.remainingStock <= product.minStock && (
+                      {stockInfo.remainingStock <= product.minStock && (
                         <AlertTriangle className="w-4 h-4 text-red-500" />
                       )}
                     </div>
-                    {stats.remainingStock <= 0 && (
+                    {stockInfo.remainingStock <= 0 && (
                       <div className="text-xs text-red-600 dark:text-red-400 font-medium">Rupture de stock</div>
                     )}
+                    <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                      Livré: {stockInfo.deliveredQuantity.toFixed(3)} {product.unit}
+                    </div>
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap">
                     {getStatusBadge(product)}
                   </td>
                   <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500 dark:text-gray-400">
                     <div className="flex items-center space-x-3">
+                      <button 
+                        onClick={() => handleAddOrder(product.id)}
+                        className="text-blue-600 hover:text-blue-700 transition-colors"
+                        title="Nouvelle commande"
+                      >
+                        <ShoppingCart className="w-4 h-4" />
+                      </button>
+                      <button 
+                        onClick={() => handleViewHistory(product.id)}
+                        className="text-purple-600 hover:text-purple-700 transition-colors"
+                        title="Historique"
+                      >
+                        <History className="w-4 h-4" />
+                      </button>
                       <button 
                         onClick={() => handleEditProduct(product.id)}
                         className="text-amber-600 hover:text-amber-700 transition-colors"
@@ -253,6 +287,68 @@ export default function ProductsList() {
         )}
       </div>
 
+      {/* Commandes actives par produit */}
+      {filteredProducts.some(p => getProductOrderStats(p.id).totalOrders > 0) && (
+        <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
+          <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100 mb-4 flex items-center space-x-2">
+            <TrendingUp className="w-5 h-5 text-blue-600" />
+            <span>Commandes Actives</span>
+          </h3>
+          
+          <div className="space-y-4">
+            {orders.filter(order => order.status !== 'cancelled').map((order) => {
+              const product = products.find(p => p.id === order.productId);
+              if (!product) return null;
+              
+              return (
+                <div key={order.id} className="flex items-center justify-between p-4 bg-gray-50 dark:bg-gray-700 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-600 transition-colors">
+                  <div className="flex items-center space-x-4">
+                    <div className={`w-10 h-10 rounded-lg flex items-center justify-center ${
+                      order.status === 'delivered' ? 'bg-green-100 dark:bg-green-900/30' :
+                      order.status === 'confirmed' ? 'bg-blue-100 dark:bg-blue-900/30' :
+                      'bg-yellow-100 dark:bg-yellow-900/30'
+                    }`}>
+                      {order.status === 'delivered' ? (
+                        <Truck className="w-5 h-5 text-green-600" />
+                      ) : order.status === 'confirmed' ? (
+                        <CheckCircle className="w-5 h-5 text-blue-600" />
+                      ) : (
+                        <Clock className="w-5 h-5 text-yellow-600" />
+                      )}
+                    </div>
+                    <div>
+                      <p className="font-medium text-gray-900 dark:text-gray-100">
+                        {order.number} - {product.name}
+                      </p>
+                      <p className="text-sm text-gray-600 dark:text-gray-300">
+                        {order.quantity} {product.unit} • {order.totalPrice.toLocaleString()} MAD
+                      </p>
+                    </div>
+                  </div>
+                  
+                  <div className="flex items-center space-x-3">
+                    <span className={`px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                      order.status === 'delivered' ? 'bg-green-100 text-green-800' :
+                      order.status === 'confirmed' ? 'bg-blue-100 text-blue-800' :
+                      'bg-yellow-100 text-yellow-800'
+                    }`}>
+                      {order.status === 'delivered' ? 'Livrée' :
+                       order.status === 'confirmed' ? 'Confirmée' : 'En attente'}
+                    </span>
+                    <button
+                      onClick={() => handleOrderStatusClick(order.id)}
+                      className="text-blue-600 hover:text-blue-700 transition-colors"
+                      title="Changer statut"
+                    >
+                      <Edit className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
       <AddProductModal 
         isOpen={isAddModalOpen} 
         onClose={() => setIsAddModalOpen(false)} 
@@ -265,6 +361,52 @@ export default function ProductsList() {
           product={products.find(p => p.id === editingProduct)!}
         />
       )}
-    </div>
+      </div>
+      {/* Modal nouvelle commande */}
+      <AddOrderModal 
+        isOpen={isAddOrderModalOpen} 
+        onClose={() => {
+          setIsAddOrderModalOpen(false);
+          setSelectedProductForOrder(null);
+        }}
+        preselectedProductId={selectedProductForOrder || undefined}
+      />
+
+      {/* Modal historique */}
+      {viewingHistory && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-gray-500 bg-opacity-75">
+          <div className="flex items-center justify-center min-h-screen px-4 pt-4 pb-20">
+            <div className="inline-block w-full max-w-4xl my-8 overflow-hidden text-left align-middle transition-all transform bg-white dark:bg-gray-800 shadow-xl rounded-2xl">
+              <div className="flex items-center justify-between p-6 border-b border-gray-200 dark:border-gray-700">
+                <h3 className="text-lg font-semibold text-gray-900 dark:text-gray-100">
+                  Historique des Commandes
+                </h3>
+                <button
+                  onClick={() => setViewingHistory(null)}
+                  className="p-2 text-gray-400 hover:text-gray-600 dark:hover:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              <div className="p-6">
+                <ProductOrderHistory 
+                  productId={viewingHistory}
+                  productName={products.find(p => p.id === viewingHistory)?.name || 'Produit'}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal statut commande */}
+      {orderStatusModal && (
+        <OrderStatusModal
+          isOpen={!!orderStatusModal}
+          onClose={() => setOrderStatusModal(null)}
+          order={orders.find(o => o.id === orderStatusModal)!}
+        />
+      )}
+    </>
   );
 }
